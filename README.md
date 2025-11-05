@@ -12,7 +12,7 @@
     *   [4.1 视觉定义资源 (`UMyAnimToTextureDataAsset`)](#41-视觉定义资源-umyanimtotexturedataasset)
     *   [4.2 逻辑 Actor 与视觉代理 (`UVATInstancedProxyComponent`)](#42-逻辑-actor-与视觉代理-uvatinstancedproxycomponent)
     *   [4.3 实例渲染器 (`UVatiRenderSubsystem`)](#43-实例渲染器-UVatiRenderSubsystem)
-    *   [4.4 动画通知适配 (`IStaticMeshAnimNotifyInterface`)](#44-动画通知适配-istaticmeshanimnotifyinterface)
+    *   [4.4 动画通知适配 (`IVertexAnimationNotifyInterface`)](#44-动画通知适配-IVertexAnimationNotifyInterface)
 5.  [功能特性详解](#5-功能特性详解)
     *   [5.1 动态动画控制与状态切换](#51-动态动画控制与状态切换)
     *   [5.2 支持动画通知 (Anim Notifies)](#52-支持动画通知-anim-notifies)
@@ -35,7 +35,7 @@
 
 ## 2. 核心特性
 
-*   **逻辑与视觉分离：** 角色Actor只保留（AI、行为树、碰撞、游戏逻辑等），不再拥有网格体。其视觉表现则由本插件系统统一管理和渲染。
+*   **逻辑与视觉分离：** 角色Actor不再拥有网格体。其视觉表现则由本插件系统统一管理和渲染。
 *   **动态动画控制：** 运行时为每个实例独立切换和播放不同的 VAT 动画片段。
 *   **动画平滑过渡：** 支持动画之间的混合 (Blending)，使得动画切换更加自然。
 *   **动画通知支持：** 兼容动画通知 (Anim Notify) 机制，允许在 VAT 动画播放到特定时间点时触发游戏逻辑（如脚步声、特效、攻击判定等）。
@@ -44,7 +44,7 @@
 
 将具有相同视觉资产（即相同的静态网格体和 VAT 动画纹理集）但行为独立的多个逻辑 Actor 的视觉表现，合并到单个`UInstancedStaticMeshComponent` (ISM) 中进行渲染。
 
-1.  **视觉定义：** 使用仿照官方 `UAnimToTextureDataAsset` 的自定义类 (`UMyAnimToTextureDataAsset`) 来定义一种“视觉类型”。该资源不仅包含由 生成的静态网格体、VAT 纹理和动画片段信息，还额外定义了该视觉类型与实例化系统交互时所需的自定义数据格式（如在 Per-Instance Custom Data 中的偏移量和所需浮点数数量）。
+1.  **视觉定义：** 使用仿照官方 `UAnimToTextureDataAsset` 的自定义类 (`UMyAnimToTextureDataAsset`) 来定义一种“视觉类型”。该资源不仅包含生成的静态网格体、VAT 纹理和动画片段信息，还额外定义了该视觉类型与实例化系统交互时所需的自定义数据格式（如在 Per-Instance Custom Data 中的偏移量和所需浮点数数量）。
 2.  **逻辑注册：** 每个需要被实例化渲染的逻辑Actor需附加一个 `UVATInstancedProxyComponent`。此组件负责：
     *   指定其所使用的 `UMyAnimToTextureDataAsset`（视觉类型）。
     *   在 `OnRegister` 时向全局的 `VATInstanceRegistry` 注册该逻辑 Actor 及其视觉需求。
@@ -138,10 +138,9 @@ graph TD
         *   根据 `UMyAnimToTextureDataAsset` 中的配置设置对应 ISM 的 `NumCustomDataFloats` 属性，确保有足够的空间存储所有类型的自定义数据。
     *   **实例生命周期管理：**
         *   维护从 `FVATProxyId` 到其在对应 ISM 中的 `InstanceIndex` 的映射 (`InstanceInfos`)。
-        *   为每个 ISM 维护一个空闲 `InstanceIndex` 列表以实现实例复用。
-        *   当代理注册时，从空闲列表获取或通过 `AddInstance` 创建新实例，并更新其初始变换和自定义数据。
-        *   当代理注销时，将其对应的实例变换设置为“不可见”（例如，缩放到极小或移到远处），并将其 `InstanceIndex` 回收到空闲列表。**避免直接调用 `RemoveInstance`，以防打乱索引。**
-    *   **实例数据更新：** 响应 `UpdateProxyVisuals` 调用，根据 `FVATProxyId` 找到对应的 ISM 和 `InstanceIndex`，然后调用 `UpdateInstanceTransform` 和 `SetCustomDataValue` (或 `SetCustomData`) 来更新实例的视觉状态。
+        *   当代理注册时，通过 `UInstancedStaticMeshComponent::AddInstance` 创建新实例，并更新其初始变换和自定义数据。
+        *   当代理注销时，通过 `UInstancedStaticMeshComponent::RemoveInstance` 移除实例。
+    *   **实例数据更新：** 响应 `UpdateProxyVisuals` 调用，根据 `FVATProxyId` 找到对应的 ISM 和 `InstanceIndex`，然后调用 `UpdateInstanceTransform` 和 `SetCustomData` 来更新实例的视觉状态。
 
 ### 4.4 动画通知适配 (`IVertexAnimationNotifyInterface`)
 
@@ -151,9 +150,8 @@ graph TD
     *   **核心方法：** `VertexAnimationNotify(UVATInstancedProxyComponent* Proxy)`。
 *   **工作流程：**
     1.  希望在 VAT 动画中使用的 `UAnimNotify` 类需要继承此接口并实现 `VertexAnimationNotify`。
-    2.  `UVATInstancedProxyComponent` 在运行时检测到某个原始通知应被触发时，会获取该通知的默认对象 (CDO)。
-    3.  如果该 CDO 实现了 `IVertexAnimationNotifyInterface`，则调用其 `VertexAnimationNotify` 方法，传递代理组件自身的指针作为上下文。
-    4.  接口的实现者可以在此方法内执行其原有的通知逻辑，例如通过 `Proxy->GetOwner()` 获取逻辑 Actor 来播放声音、生成特效等。
+    2.  `UVATInstancedProxyComponent` 在运行时检测到某个原始通知应被触发时，如果它实现了 `IVertexAnimationNotifyInterface`，则调用其 `VertexAnimationNotify` 方法，传递代理组件自身的指针作为上下文。
+    3.  接口的实现者可以在此方法内执行其原有的通知逻辑，例如通过 `Proxy->GetOwner()` 获取逻辑 Actor 来播放声音、生成特效等。
 
 ## 5. 功能特性详解
 
